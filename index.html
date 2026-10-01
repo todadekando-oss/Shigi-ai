@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>自作将棋AI対局</title>
+  <title>自作将棋AI対局 v3</title>
   <style>
 :root {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
@@ -187,8 +187,8 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     <section class="panel game-panel">
       <div class="title-row">
         <div>
-          <h1>自作将棋AI対局</h1>
-          <p>外部エンジン不使用。合法手生成・評価関数・αβ探索をJavaScriptで実装。</p>
+          <h1>自作将棋AI対局 v3</h1>
+          <p>外部エンジン不使用。置換表・反復深化・静止探索・手順並べ替えを含む自作エンジン。</p>
         </div>
         <div id="status" class="status">対局を開始してください</div>
       </div>
@@ -198,9 +198,10 @@ p { margin: 4px 0 10px; line-height: 1.55; }
         <button id="startWhite">後手で開始</button>
         <label>AI強さ
           <select id="level">
-            <option value="1">弱い</option>
-            <option value="2" selected>普通</option>
-            <option value="3">強い</option>
+            <option value="1">速い</option>
+            <option value="2">普通</option>
+            <option value="3" selected>強い</option>
+            <option value="4">本気（最大8秒）</option>
           </select>
         </label>
         <button id="undo">1手戻す</button>
@@ -250,8 +251,8 @@ p { margin: 4px 0 10px; line-height: 1.55; }
         <div id="kifuMessage" class="small"></div>
       </div>
       <h2>AIの仕組み</h2>
-      <p>各局面の合法手を生成し、駒得・成り・玉の安全・駒の働きを数値化。αβ法で先の局面を探索して最も評価の高い手を選びます。</p>
-      <p class="small">強さはPC/スマホ性能に応じて変わります。完全なプロ棋士級ではなく、学習用の自作エンジンです。</p>
+      <p>合法手生成に加えて、反復深化・αβ探索・置換表・静止探索・PVS・キラームーブ・履歴ヒューリスティックを実装。駒得だけでなく、玉の安全、駒の働き、序盤の駒組みも評価します。</p>
+      <p class="small">「強い」は最大約4秒、「本気」は最大約8秒考えます。端末性能で読みの深さは変わります。プロ棋士級を保証するものではありません。</p>
     </aside>
   </main>
 
@@ -266,6 +267,29 @@ p { margin: 4px 0 10px; line-height: 1.55; }
   const BASE = { PR:"R", PB:"B", PS:"S", PN:"N", PL:"L", PP:"P" };
   const VALUE = { K:100000, R:1000, B:900, G:600, S:520, N:360, L:320, P:100, PR:1350, PB:1250, PS:620, PN:600, PL:590, PP:580 };
   const PROMOTE_TO = { R:"PR", B:"PB", S:"PS", N:"PN", L:"PL", P:"PP" };
+  const ALL_TYPES=["K","R","B","G","S","N","L","P","PR","PB","PS","PN","PL","PP"];
+  const TYPE_ID=Object.fromEntries(ALL_TYPES.map((x,i)=>[x,i]));
+  const SIDE_ID={b:0,w:1};
+  function makeRand(seed){ let x=seed>>>0; return ()=>{ x^=x<<13; x^=x>>>17; x^=x<<5; return x>>>0; }; }
+  const rnd1=makeRand(0x6d2b79f5), rnd2=makeRand(0x9e3779b9);
+  const ZP1=Array.from({length:2*ALL_TYPES.length*81},()=>rnd1());
+  const ZP2=Array.from({length:2*ALL_TYPES.length*81},()=>rnd2());
+  const ZH1=Array.from({length:2*7*19},()=>rnd1());
+  const ZH2=Array.from({length:2*7*19},()=>rnd2());
+  const ZTURN1=rnd1(), ZTURN2=rnd2();
+  const HAND_ID=Object.fromEntries(TYPES.map((x,i)=>[x,i]));
+  function pzIndex(side,type,r,c){ return (SIDE_ID[side]*ALL_TYPES.length+TYPE_ID[type])*81+r*9+c; }
+  function hzIndex(side,type,n){ return (SIDE_ID[side]*7+HAND_ID[type])*19+Math.min(18,n); }
+  function hashInit(s){
+    let h1=0,h2=0;
+    for(let r=0;r<9;r++)for(let c=0;c<9;c++){ const p=s.board[r][c]; if(!p)continue; const i=pzIndex(p.side,p.type,r,c); h1^=ZP1[i];h2^=ZP2[i]; }
+    for(const side of [B,W])for(const t of TYPES){ const i=hzIndex(side,t,s.hands[side][t]); h1^=ZH1[i];h2^=ZH2[i]; }
+    if(s.turn===W){h1^=ZTURN1;h2^=ZTURN2;}
+    s.hash1=h1>>>0;s.hash2=h2>>>0;
+  }
+  function xorPieceHash(s,side,type,r,c){ const i=pzIndex(side,type,r,c); s.hash1=(s.hash1^ZP1[i])>>>0;s.hash2=(s.hash2^ZP2[i])>>>0; }
+  function xorHandHash(s,side,type,n){ const i=hzIndex(side,type,n); s.hash1=(s.hash1^ZH1[i])>>>0;s.hash2=(s.hash2^ZH2[i])>>>0; }
+  function xorTurnHash(s){ s.hash1=(s.hash1^ZTURN1)>>>0;s.hash2=(s.hash2^ZTURN2)>>>0; }
 
   const boardEl = document.getElementById("board");
   const statusEl = document.getElementById("status");
@@ -305,7 +329,8 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     }
     board[1][1] = piece("R", W); board[1][7] = piece("B", W);
     board[7][1] = piece("B", B); board[7][7] = piece("R", B);
-    return { board, hands: { [B]: emptyHand(), [W]: emptyHand() }, turn: B, moveNo: 1, history: [] };
+    const s={ board, hands: { [B]: emptyHand(), [W]: emptyHand() }, turn: B, moveNo: 1, history: [] };
+    hashInit(s); return s;
   }
   function emptyHand(){ return {R:0,B:0,G:0,S:0,N:0,L:0,P:0}; }
   function cloneState(s) {
@@ -314,7 +339,8 @@ p { margin: 4px 0 10px; line-height: 1.55; }
       hands: { [B]: {...s.hands[B]}, [W]: {...s.hands[W]} },
       turn: s.turn,
       moveNo: s.moveNo,
-      history: s.history.slice()
+      history: s.history.slice(),
+      hash1: s.hash1, hash2: s.hash2
     };
   }
   function other(side){ return side === B ? W : B; }
@@ -436,144 +462,450 @@ p { margin: 4px 0 10px; line-height: 1.55; }
 
   function applyMove(s, m){
     const ns=cloneState(s);
-    const side=s.turn;
-    if(m.drop){
-      ns.hands[side][m.drop]--;
-      ns.board[m.to[0]][m.to[1]]=piece(m.drop, side);
-    } else {
-      const [fr,fc]=m.from, [tr,tc]=m.to;
-      const moving=ns.board[fr][fc];
-      const captured=ns.board[tr][tc];
-      if(captured){
-        const cap=demote(captured.type);
-        ns.hands[side][cap]++;
-      }
-      ns.board[fr][fc]=null;
-      ns.board[tr][tc]=piece(m.promote ? PROMOTE_TO[moving.type] : moving.type, side);
-    }
-    ns.turn=other(side);
-    ns.moveNo++;
+    makeMoveInPlace(ns,m);
     return ns;
   }
 
+  function makeMoveInPlace(s,m){
+    const side=s.turn;
+    const undo={turn:side,moveNo:s.moveNo,captured:null,movingType:null,handType:null,hash1:s.hash1,hash2:s.hash2};
+    if(m.drop){
+      undo.handType=m.drop;
+      const old=s.hands[side][m.drop]; xorHandHash(s,side,m.drop,old);
+      s.hands[side][m.drop]--; xorHandHash(s,side,m.drop,old-1);
+      s.board[m.to[0]][m.to[1]]=piece(m.drop,side); xorPieceHash(s,side,m.drop,m.to[0],m.to[1]);
+    }else{
+      const [fr,fc]=m.from,[tr,tc]=m.to;
+      const moving=s.board[fr][fc], captured=s.board[tr][tc];
+      undo.movingType=moving.type; undo.captured=captured?{type:captured.type,side:captured.side}:null;
+      xorPieceHash(s,side,moving.type,fr,fc);
+      if(captured){
+        xorPieceHash(s,captured.side,captured.type,tr,tc);
+        const cap=demote(captured.type),old=s.hands[side][cap]; undo.handType=cap;
+        xorHandHash(s,side,cap,old); s.hands[side][cap]++; xorHandHash(s,side,cap,old+1);
+      }
+      s.board[fr][fc]=null;
+      const nt=m.promote?PROMOTE_TO[moving.type]:moving.type;
+      s.board[tr][tc]=piece(nt,side); xorPieceHash(s,side,nt,tr,tc);
+    }
+    s.turn=other(side); s.moveNo++; xorTurnHash(s);
+    return undo;
+  }
+
+  function unmakeMoveInPlace(s,m,u){
+    s.turn=u.turn; s.moveNo=u.moveNo;
+    const side=u.turn;
+    if(m.drop){
+      s.board[m.to[0]][m.to[1]]=null; s.hands[side][m.drop]++;
+    }else{
+      const [fr,fc]=m.from,[tr,tc]=m.to;
+      s.board[fr][fc]=piece(u.movingType,side);
+      s.board[tr][tc]=u.captured?piece(u.captured.type,u.captured.side):null;
+      if(u.captured) s.hands[side][u.handType]--;
+    }
+    s.hash1=u.hash1;s.hash2=u.hash2;
+  }
+
   function legalMoves(s, side=s.turn, skipUchifuzume=false){
-    // 呼び出し側が任意sideを指定することがあるためturnを合わせた一時局面で検査する。
-    const base = s.turn===side ? s : {...s, turn:side};
-    const all = pseudoBoardMoves(base,side).concat(pseudoDrops(base,side));
+    const originalTurn=s.turn;
+    if(originalTurn!==side) s.turn=side;
+    const all=pseudoBoardMoves(s,side).concat(pseudoDrops(s,side));
     const legal=[];
     for(const m of all){
-      const ns=applyMove(base,m);
-      if(inCheck(ns,side)) continue;
-      if(!skipUchifuzume && m.drop==="P" && inCheck(ns,other(side))){
-        const replies=legalMoves(ns,other(side),true);
-        if(replies.length===0) continue; // 打ち歩詰め
+      const u=makeMoveInPlace(s,m);
+      const illegal=inCheck(s,side);
+      let pawnMate=false;
+      if(!illegal && !skipUchifuzume && m.drop==="P" && inCheck(s,other(side))){
+        const replies=legalMoves(s,other(side),true);
+        pawnMate=replies.length===0;
       }
-      legal.push(m);
+      unmakeMoveInPlace(s,m,u);
+      if(!illegal && !pawnMate) legal.push(m);
     }
+    s.turn=originalTurn;
     return legal;
   }
 
-  function materialEval(s){
+  const ATTACK_WEIGHT={K:2,R:5,B:5,G:4,S:4,N:3,L:2,P:1,PR:6,PB:6,PS:4,PN:4,PL:4,PP:4};
+  const START_SQUARES={
+    b:{K:[[8,4]],R:[[7,7]],B:[[7,1]],G:[[8,3],[8,5]],S:[[8,2],[8,6]],N:[[8,1],[8,7]],L:[[8,0],[8,8]]},
+    w:{K:[[0,4]],R:[[1,1]],B:[[1,7]],G:[[0,3],[0,5]],S:[[0,2],[0,6]],N:[[0,1],[0,7]],L:[[0,0],[0,8]]}
+  };
+
+  function attackInfo(s,side){
+    const count=new Uint8Array(81);
+    const weight=new Uint16Array(81);
+    let mobility=0;
+    for(let r=0;r<9;r++) for(let c=0;c<9;c++){
+      const p=s.board[r][c]; if(!p||p.side!==side) continue;
+      const dirs=directionsFor(p.type,p.side);
+      for(const [dr,dc] of dirs.step){
+        const rr=r+dr,cc=c+dc; if(!inside(rr,cc)) continue;
+        const i=rr*9+cc; count[i]++; weight[i]+=ATTACK_WEIGHT[p.type];
+        if(!s.board[rr][cc]||s.board[rr][cc].side!==side) mobility++;
+      }
+      for(const [dr,dc] of dirs.slide){
+        let rr=r+dr,cc=c+dc;
+        while(inside(rr,cc)){
+          const i=rr*9+cc; count[i]++; weight[i]+=ATTACK_WEIGHT[p.type];
+          if(!s.board[rr][cc]||s.board[rr][cc].side!==side) mobility++;
+          if(s.board[rr][cc]) break;
+          rr+=dr;cc+=dc;
+        }
+      }
+    }
+    return {count,weight,mobility};
+  }
+
+  function phaseFactor(s){ return Math.min(1,Math.max(0,(s.moveNo-1)/70)); }
+
+  function openingPositionBonus(s,side){
+    if(s.moveNo>28) return 0;
+    const decay=Math.max(0,1-(s.moveNo-1)/28);
+    let b=0;
+    const sign=side===B?1:-1;
+    const ownP=(r,c)=>{const p=s.board[r][c];return p&&p.side===side&&p.type==="P";};
+    if(side===B){
+      if(ownP(5,2)) b+=36; // 7六歩
+      if(ownP(5,7)) b+=32; // 2六歩
+      if(ownP(4,7)) b+=14; // 2五歩
+    }else{
+      if(ownP(3,6)) b+=36; // 3四歩
+      if(ownP(3,1)) b+=32; // 8四歩
+      if(ownP(4,1)) b+=14; // 8五歩
+    }
+    const k=kingPos(s,side);
+    if(k && s.moveNo<8){
+      const start=side===B?[8,4]:[0,4];
+      if(k[0]!==start[0]||k[1]!==start[1]) b-=90;
+    }
+    // 早い桂・香の突進を抑制
+    for(let r=0;r<9;r++)for(let c=0;c<9;c++){
+      const p=s.board[r][c]; if(!p||p.side!==side) continue;
+      const adv=side===B?8-r:r;
+      if(p.type==="N" && adv>=3) b-=55;
+      if(p.type==="L" && adv>=2) b-=70;
+      if(p.type==="R" && adv>=4 && s.moveNo<16) b-=35;
+    }
+    return b*decay*sign;
+  }
+
+  function kingSafety(s,side,ownAtk,enemyAtk){
+    const k=kingPos(s,side); if(!k) return -100000;
+    const [kr,kc]=k;
+    let defenders=0,danger=0,escape=0;
+    for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
+      if(!dr&&!dc) continue;
+      const r=kr+dr,c=kc+dc; if(!inside(r,c)) continue;
+      const i=r*9+c;
+      const p=s.board[r][c];
+      if(p&&p.side===side){
+        defenders += p.type==="G"?34 : p.type==="S"?28 : ["PR","PB","R","B"].includes(p.type)?16 : 10;
+      }else if(enemyAtk.count[i]===0) escape++;
+      if(enemyAtk.count[i]) danger += 20*enemyAtk.count[i] + 4*enemyAtk.weight[i];
+    }
+    // 2マス圏の圧力
+    for(let dr=-2;dr<=2;dr++) for(let dc=-2;dc<=2;dc++){
+      if(Math.max(Math.abs(dr),Math.abs(dc))!==2) continue;
+      const r=kr+dr,c=kc+dc; if(!inside(r,c)) continue;
+      const i=r*9+c; danger += enemyAtk.weight[i]*1.8;
+    }
+    const foe=other(side), h=s.hands[foe];
+    const handThreat=h.R*38+h.B*34+h.G*25+h.S*20+h.N*12+h.L*8+h.P*3;
+    danger += handThreat*Math.max(.25,(8-defenders/12)/8);
+    const edge=Math.abs(kc-4);
+    const castle=(s.moveNo>10?edge*6:0);
+    return defenders + escape*7 + castle - danger;
+  }
+
+  function staticEvalBlack(s){
     let score=0;
+    const phase=phaseFactor(s);
+    const aB=attackInfo(s,B), aW=attackInfo(s,W);
     for(let r=0;r<9;r++) for(let c=0;c<9;c++){
       const p=s.board[r][c]; if(!p) continue;
+      const sign=p.side===B?1:-1;
       let v=VALUE[p.type];
-      const fwd = p.side===B ? (8-r) : r;
-      if(p.type!=="K") v += fwd*3;
-      if((p.type==="R"||p.type==="B"||p.type==="PR"||p.type==="PB") && c>=2&&c<=6&&r>=2&&r<=6) v+=18;
-      score += p.side===B ? v : -v;
+      const adv=p.side===B?8-r:r;
+      if(p.type==="P") v+=Math.min(6,adv)*4;
+      if(p.type==="S") v+=Math.min(5,adv)*7;
+      if(p.type==="N") v+=Math.min(4,adv)*4;
+      if(p.type==="G") v+=Math.min(3,adv)*2;
+      if(["R","B","PR","PB"].includes(p.type) && r>=2&&r<=6&&c>=2&&c<=6) v+=20;
+      score+=sign*v;
+      if(p.type!=="K"){
+        const own=p.side===B?aB:aW, foe=p.side===B?aW:aB, i=r*9+c;
+        if(foe.count[i]){
+          const hanging=own.count[i]===0 ? .16 : (foe.count[i]>own.count[i]?.07:.025);
+          score-=sign*VALUE[p.type]*hanging;
+        }
+      }
     }
     for(const side of [B,W]) for(const t of TYPES){
-      const v=VALUE[t]*0.92*s.hands[side][t];
-      score += side===B ? v : -v;
+      const mult=t==="P"?1.02:1.05;
+      const v=VALUE[t]*mult*s.hands[side][t];
+      score += side===B?v:-v;
     }
-    // 玉の周囲の味方駒を軽く評価
-    for(const side of [B,W]){
-      const k=kingPos(s,side); if(!k) continue;
-      let guard=0;
-      for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
-        if(!dr&&!dc) continue;
-        const r=k[0]+dr,c=k[1]+dc;
-        if(inside(r,c) && s.board[r][c] && s.board[r][c].side===side) guard++;
-      }
-      score += (side===B?1:-1)*guard*16;
-    }
+    score+=(aB.mobility-aW.mobility)*1.5;
+    score+=kingSafety(s,B,aB,aW)-kingSafety(s,W,aW,aB);
+    score+=openingPositionBonus(s,B)+openingPositionBonus(s,W);
+    if(inCheck(s,B)) score-=55+phase*45;
+    if(inCheck(s,W)) score+=55+phase*45;
     return score;
   }
 
-  function moveOrderingScore(s,m){
-    let v=0;
-    if(m.promote) v+=450;
-    if(m.drop) v+=40 + VALUE[m.drop]*0.03;
-    else {
-      const target=s.board[m.to[0]][m.to[1]];
-      const mover=s.board[m.from[0]][m.from[1]];
-      if(target) v+=2000 + VALUE[target.type] - VALUE[mover.type]*0.08;
+  function evalForTurn(s){ const x=staticEvalBlack(s); return s.turn===B?x:-x; }
+
+  function isCapture(s,m){ return !m.drop && !!s.board[m.to[0]][m.to[1]]; }
+  function moveKey(m){ return m.drop?`D${m.drop}:${m.to[0]}${m.to[1]}`:`${m.from[0]}${m.from[1]}:${m.to[0]}${m.to[1]}:${m.promote?1:0}`; }
+
+  function openingMoveBonus(s,m){
+    if(s.moveNo>22) return 0;
+    const side=s.turn, turn=s.moveNo;
+    if(m.drop) return 0;
+    const p=s.board[m.from[0]][m.from[1]];
+    const capture=!!s.board[m.to[0]][m.to[1]];
+    let b=0;
+    const dest=`${m.to[0]},${m.to[1]}`;
+    if(side===B){
+      if(p.type==="P"&&dest==="5,2") b+=260;
+      if(p.type==="P"&&dest==="5,7") b+=230;
+      if(p.type==="P"&&dest==="4,7") b+=100;
+      if(p.type==="S"&&(dest==="7,5"||dest==="7,3")) b+=80;
+      if(p.type==="G"&&dest==="7,4") b+=70;
+      if(p.type==="K"&&(dest==="7,3"||dest==="7,5"||dest==="7,2"||dest==="7,6")) b+=turn>6?70:-80;
+    }else{
+      if(p.type==="P"&&dest==="3,6") b+=260;
+      if(p.type==="P"&&dest==="3,1") b+=230;
+      if(p.type==="P"&&dest==="4,1") b+=100;
+      if(p.type==="S"&&(dest==="1,3"||dest==="1,5")) b+=80;
+      if(p.type==="G"&&dest==="1,4") b+=70;
+      if(p.type==="K"&&(dest==="1,3"||dest==="1,5"||dest==="1,2"||dest==="1,6")) b+=turn>6?70:-80;
     }
-    const ns=applyMove(s,m);
-    if(inCheck(ns, ns.turn)) v+=700;
+    if(!capture){
+      if(p.type==="K"&&turn<7) b-=260;
+      if(p.type==="N"&&turn<9) b-=240;
+      if(p.type==="L"&&turn<13) b-=260;
+      const adv=side===B?8-m.to[0]:m.to[0];
+      if(["R","B"].includes(p.type)&&adv>=5&&turn<12) b-=120;
+    }
+    return b;
+  }
+
+  const INF=100000000, MATE=1000000;
+  let searchDeadline=0, stopSearch=false, nodes=0, qnodes=0;
+  const TT=new Map();
+  let killers=Array.from({length:80},()=>[null,null]);
+  const historyHeuristic=new Map();
+  let rootBestKey=null;
+  let lastSearchStats={depth:0,nodes:0,score:0,pv:[]};
+  let pathCount=new Map();
+
+  function timeCheck(){
+    if(((nodes+qnodes)&511)===0 && performance.now()>searchDeadline) stopSearch=true;
+    return stopSearch;
+  }
+  function positionKey(s){ return `${s.hash1}:${s.hash2}`; }
+  function pushPath(k){ pathCount.set(k,(pathCount.get(k)||0)+1); }
+  function popPath(k){ const n=(pathCount.get(k)||1)-1; if(n<=0) pathCount.delete(k); else pathCount.set(k,n); }
+
+  function orderingScore(s,m,ttBest,ply,root=false){
+    const mk=moveKey(m);
+    let v=0;
+    if(ttBest&&mk===ttBest) v+=2000000;
+    if(root) v+=openingMoveBonus(s,m)*100;
+    if(isCapture(s,m)){
+      const target=s.board[m.to[0]][m.to[1]], mover=s.board[m.from[0]][m.from[1]];
+      v+=500000+VALUE[target.type]*16-VALUE[mover.type];
+    }
+    if(m.promote){
+      const p=s.board[m.from[0]][m.from[1]], to=PROMOTE_TO[p.type];
+      v+=300000+Math.max(0,VALUE[to]-VALUE[p.type])*8;
+    }
+    if(!isCapture(s,m)&&!m.promote){
+      const k=killers[ply]||[];
+      if(k[0]===mk) v+=180000; else if(k[1]===mk) v+=130000;
+      v+=historyHeuristic.get(`${s.turn}:${mk}`)||0;
+    }
     return v;
   }
 
-  function positionKey(s){
-    let out="";
-    for(let r=0;r<9;r++) for(let c=0;c<9;c++){
-      const p=s.board[r][c]; out+=p ? p.side+p.type+"," : ".";
+  function tacticalMoves(s){
+    const side=s.turn;
+    const all=pseudoBoardMoves(s,side);
+    const out=[];
+    for(const m of all){
+      const cap=!!s.board[m.to[0]][m.to[1]];
+      if(!cap&&!m.promote) continue;
+      const u=makeMoveInPlace(s,m); const illegal=inCheck(s,side); unmakeMoveInPlace(s,m,u);
+      if(!illegal) out.push(m);
     }
-    out+="|"+s.turn;
-    for(const side of [B,W]) for(const t of TYPES) out+=`|${side}${t}${s.hands[side][t]}`;
     return out;
   }
 
-  let searchDeadline=0;
-  let stopSearch=false;
-  let nodes=0;
-  function negamax(s, depth, alpha, beta, color, ply){
-    nodes++;
-    if((nodes & 255)===0 && performance.now()>searchDeadline){ stopSearch=true; return 0; }
-    if(stopSearch) return 0;
-    const moves=legalMoves(s,s.turn);
-    if(moves.length===0){
-      if(inCheck(s,s.turn)) return -999999 + ply;
-      return 0;
+  function qsearch(s,alpha,beta,ply,qdepth){
+    qnodes++; if(timeCheck()) return 0;
+    const key=positionKey(s);
+    if((pathCount.get(key)||0)>1) return 0;
+    const check=inCheck(s,s.turn);
+    if(check){
+      const evasions=legalMoves(s,s.turn);
+      if(!evasions.length) return -MATE+ply;
+      evasions.sort((a,b)=>orderingScore(s,b,null,ply)-orderingScore(s,a,null,ply));
+      for(const m of evasions){
+        const u=makeMoveInPlace(s,m),ck=positionKey(s);pushPath(ck);
+        const sc=-qsearch(s,-beta,-alpha,ply+1,qdepth+1);
+        popPath(ck);unmakeMoveInPlace(s,m,u);
+        if(stopSearch)return 0;if(sc>=beta)return sc;if(sc>alpha)alpha=sc;
+      }
+      return alpha;
     }
-    if(depth<=0) return color*materialEval(s);
-    moves.sort((a,b)=>moveOrderingScore(s,b)-moveOrderingScore(s,a));
-    let best=-Infinity;
-    for(const m of moves){
-      const ns=applyMove(s,m);
-      const score=-negamax(ns,depth-1,-beta,-alpha,-color,ply+1);
+    const stand=evalForTurn(s);
+    if(stand>=beta)return stand;if(stand>alpha)alpha=stand;
+    if(qdepth>=5)return alpha;
+    const noisy=tacticalMoves(s);
+    noisy.sort((a,b)=>orderingScore(s,b,null,ply)-orderingScore(s,a,null,ply));
+    const maxMoves=Math.min(noisy.length,16);
+    for(let i=0;i<maxMoves;i++){
+      const m=noisy[i],u=makeMoveInPlace(s,m),ck=positionKey(s);pushPath(ck);
+      const sc=-qsearch(s,-beta,-alpha,ply+1,qdepth+1);
+      popPath(ck);unmakeMoveInPlace(s,m,u);
+      if(stopSearch)return 0;if(sc>=beta)return sc;if(sc>alpha)alpha=sc;
+    }
+    return alpha;
+  }
+
+  function negamax(s,depth,alpha,beta,ply,extUsed=0){
+    nodes++; if(timeCheck()) return 0;
+    const key=positionKey(s);
+    if((pathCount.get(key)||0)>1) return 0;
+    const alphaOrig=alpha;
+    const tt=TT.get(key);
+    if(tt&&tt.depth>=depth){
+      if(tt.flag===0) return tt.score;
+      if(tt.flag===1) alpha=Math.max(alpha,tt.score);
+      else if(tt.flag===2) beta=Math.min(beta,tt.score);
+      if(alpha>=beta) return tt.score;
+    }
+    const check=inCheck(s,s.turn);
+    if(depth<=0) return qsearch(s,alpha,beta,ply,0);
+    let moves=legalMoves(s,s.turn);
+    if(!moves.length) return check ? -MATE+ply : 0;
+    let localDepth=depth;
+    if(check&&extUsed<2) localDepth++;
+    const ttBest=tt?tt.best:null;
+    moves.sort((a,b)=>orderingScore(s,b,ttBest,ply)-orderingScore(s,a,ttBest,ply));
+    let best=-INF,bestKey=null;
+    for(let i=0;i<moves.length;i++){
+      const m=moves[i],quiet=!isCapture(s,m)&&!m.promote;
+      const u=makeMoveInPlace(s,m);
+      const childCheck=inCheck(s,s.turn);
+      const ck=positionKey(s); pushPath(ck);
+      let reduction=0;
+      if(localDepth>=4&&i>=5&&quiet&&!childCheck&&!check){
+        reduction=1;
+        if(localDepth>=6&&i>=12) reduction=2;
+      }
+      let score;
+      const nextDepth=Math.max(0,localDepth-1-reduction);
+      if(i===0){
+        score=-negamax(s,nextDepth,-beta,-alpha,ply+1,extUsed+(check?1:0));
+      }else{
+        score=-negamax(s,nextDepth,-alpha-1,-alpha,ply+1,extUsed+(check?1:0));
+        if(!stopSearch&&score>alpha&&reduction>0){
+          score=-negamax(s,localDepth-1,-alpha-1,-alpha,ply+1,extUsed+(check?1:0));
+        }
+        if(!stopSearch&&score>alpha&&score<beta){
+          score=-negamax(s,localDepth-1,-beta,-alpha,ply+1,extUsed+(check?1:0));
+        }
+      }
+      popPath(ck); unmakeMoveInPlace(s,m,u);
       if(stopSearch) return 0;
-      if(score>best) best=score;
+      if(score>best){best=score;bestKey=moveKey(m);}
       if(score>alpha) alpha=score;
-      if(alpha>=beta) break;
+      if(alpha>=beta){
+        if(quiet){
+          const mk=moveKey(m); if(!killers[ply]) killers[ply]=[null,null];
+          if(killers[ply][0]!==mk){killers[ply][1]=killers[ply][0];killers[ply][0]=mk;}
+          const hk=`${s.turn}:${mk}`; historyHeuristic.set(hk,(historyHeuristic.get(hk)||0)+localDepth*localDepth*20);
+        }
+        break;
+      }
     }
+    let flag=0; if(best<=alphaOrig) flag=2; else if(best>=beta) flag=1;
+    TT.set(key,{depth:localDepth,score:best,flag,best:bestKey});
+    if(TT.size>120000) TT.clear();
     return best;
   }
 
-  function chooseAiMove(s, level){
-    const rootMoves=legalMoves(s,s.turn);
-    if(!rootMoves.length) return null;
-    const cfg = level===1 ? {maxDepth:1,ms:120} : level===2 ? {maxDepth:2,ms:550} : {maxDepth:3,ms:1600};
-    searchDeadline=performance.now()+cfg.ms;
-    let bestMove=rootMoves[0], bestScore=-Infinity;
-    const color=s.turn===B?1:-1;
-    for(let depth=1; depth<=cfg.maxDepth; depth++){
-      stopSearch=false; nodes=0;
-      const ordered=rootMoves.slice().sort((a,b)=>moveOrderingScore(s,b)-moveOrderingScore(s,a));
-      let localBest=bestMove, localScore=-Infinity;
-      for(const m of ordered){
-        const ns=applyMove(s,m);
-        const score=-negamax(ns,depth-1,-Infinity,Infinity,-color,1);
-        if(stopSearch) break;
-        if(score>localScore){ localScore=score; localBest=m; }
-      }
-      if(!stopSearch){ bestMove=localBest; bestScore=localScore; }
-      if(performance.now()>searchDeadline) break;
-      if(Math.abs(bestScore)>990000) break;
+  function extractPV(s,maxLen=12){
+    const pv=[],undos=[];
+    for(let i=0;i<maxLen;i++){
+      const e=TT.get(positionKey(s)); if(!e||!e.best) break;
+      const moves=legalMoves(s,s.turn); const m=moves.find(x=>moveKey(x)===e.best); if(!m) break;
+      pv.push(moveText(s,m)); const u=makeMoveInPlace(s,m); undos.push([m,u]);
     }
-    return bestMove;
+    for(let i=undos.length-1;i>=0;i--) unmakeMoveInPlace(s,undos[i][0],undos[i][1]);
+    return pv;
   }
+
+  function searchRoot(s,depth,alpha,beta,preferredKey=null){
+    let moves=legalMoves(s,s.turn);
+    if(!moves.length) return {bestMove:null,score:inCheck(s,s.turn)?-MATE:0,rows:[]};
+    moves.sort((a,b)=>orderingScore(s,b,preferredKey,0,true)-orderingScore(s,a,preferredKey,0,true));
+    const rows=[]; let best=-INF,bestMove=moves[0],a=alpha;
+    for(let i=0;i<moves.length;i++){
+      const m=moves[i],u=makeMoveInPlace(s,m),ck=positionKey(s); pushPath(ck);
+      let sc;
+      if(i===0) sc=-negamax(s,depth-1,-beta,-a,1,0);
+      else{
+        sc=-negamax(s,depth-1,-a-1,-a,1,0);
+        if(!stopSearch&&sc>a&&sc<beta) sc=-negamax(s,depth-1,-beta,-a,1,0);
+      }
+      popPath(ck); unmakeMoveInPlace(s,m,u);
+      if(stopSearch) break;
+      rows.push({m:copyMove(m),score:sc,text:moveText(s,m)});
+      if(sc>best){best=sc;bestMove=m;}
+      if(sc>a) a=sc;
+      if(a>=beta) break;
+    }
+    rows.sort((x,y)=>y.score-x.score);
+    return {bestMove:copyMove(bestMove),score:best,rows};
+  }
+
+  function iterativeSearch(s,{maxDepth,timeMs,multiPV=3}={}){
+    searchDeadline=performance.now()+timeMs; stopSearch=false; nodes=0;qnodes=0;
+    killers=Array.from({length:80},()=>[null,null]); historyHeuristic.clear();
+    const rootKey=positionKey(s); pathCount=new Map([[rootKey,1]]);
+    let bestMove=null,bestScore=0,completed=0,finalRows=[]; let pref=rootBestKey;
+    for(let d=1;d<=maxDepth;d++){
+      stopSearch=false;
+      let alpha=-INF,beta=INF;
+      if(d>=3&&completed){alpha=bestScore-140;beta=bestScore+140;}
+      let r=searchRoot(s,d,alpha,beta,pref);
+      if(stopSearch) break;
+      if(r.score<=alpha||r.score>=beta){
+        r=searchRoot(s,d,-INF,INF,pref);
+        if(stopSearch) break;
+      }
+      completed=d;bestMove=r.bestMove;bestScore=r.score;finalRows=r.rows;pref=bestMove?moveKey(bestMove):pref;
+      rootBestKey=pref;
+      if(Math.abs(bestScore)>MATE-500) break;
+      if(performance.now()>searchDeadline) break;
+    }
+    const pv=extractPV(s,12);
+    lastSearchStats={depth:completed,nodes:nodes+qnodes,score:bestScore,pv};
+    return {bestMove,bestScore,depth:completed,nodes:nodes+qnodes,pv,rows:finalRows.slice(0,multiPV)};
+  }
+
+  function chooseAiMove(s,level){
+    const cfg=level===1?{maxDepth:3,timeMs:450}:level===2?{maxDepth:5,timeMs:1500}:level===3?{maxDepth:7,timeMs:4200}:{maxDepth:9,timeMs:8000};
+    const r=iterativeSearch(s,{...cfg,multiPV:3});
+    return r.bestMove;
+  }
+
+  function moveOrderingScore(s,m){ return orderingScore(s,m,null,0,false); }
+
 
   function moveText(s,m){
     const side=s.turn===B?"▲":"△";
@@ -611,25 +943,13 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     return `${v>=0?"＋":"－"}${Math.abs(v).toFixed(2)}`;
   }
 
-  function analyzeMoves(s, depth=2, timeMs=1800, topN=3){
-    const moves=legalMoves(s,s.turn);
-    if(!moves.length) return [];
-    const rootColor=s.turn===B?1:-1;
-    searchDeadline=performance.now()+timeMs;
-    stopSearch=false; nodes=0;
-    const ordered=moves.slice().sort((a,b)=>moveOrderingScore(s,b)-moveOrderingScore(s,a));
-    const rows=[];
-    for(const m of ordered){
-      if(performance.now()>searchDeadline) break;
-      stopSearch=false;
-      const ns=applyMove(s,m);
-      const sideScore=-negamax(ns,Math.max(0,depth-1),-Infinity,Infinity,-rootColor,1);
-      if(stopSearch) break;
-      const blackScore=sideScore*rootColor;
-      rows.push({m:copyMove(m), sideScore, blackScore, text:moveText(s,m)});
-    }
-    rows.sort((a,b)=>b.sideScore-a.sideScore);
-    return rows.slice(0,topN);
+  function analyzeMoves(s, depth=5, timeMs=4500, topN=3){
+    const r=iterativeSearch(s,{maxDepth:depth,timeMs,multiPV:Math.max(3,topN)});
+    const rootSign=s.turn===B?1:-1;
+    return r.rows.slice(0,topN).map(x=>({
+      m:copyMove(x.m), sideScore:x.score, blackScore:x.score*rootSign, text:x.text,
+      depth:r.depth,nodes:r.nodes,pv:r.pv
+    }));
   }
 
   function runCurrentAnalysis(){
@@ -637,10 +957,11 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     analysisBusy=true;
     analysisSummaryEl.textContent="解析中…";
     analysisLinesEl.innerHTML="";
-    analysisProgressEl.textContent="局面を読んでいます";
+    analysisProgressEl.textContent="置換表＋静止探索で読んでいます";
     setTimeout(()=>{
-      const depth=Number(levelEl.value)===3?3:2;
-      const rows=analyzeMoves(state,depth,Number(levelEl.value)===3?2600:1500,3);
+      const lv=Number(levelEl.value);
+      const cfg=lv>=4?{d:8,ms:9000}:lv===3?{d:7,ms:5500}:lv===2?{d:5,ms:2600}:{d:4,ms:1200};
+      const rows=analyzeMoves(state,cfg.d,cfg.ms,3);
       if(!rows.length){
         analysisSummaryEl.textContent=inCheck(state,state.turn)?`${sideName(state.turn)}は詰みです`:`合法手がありません`;
       }else{
@@ -650,17 +971,13 @@ p { margin: 4px 0 10px; line-height: 1.55; }
           li.textContent=`${i+1}. ${x.text}　${scoreLabel(x.blackScore)}`;
           analysisLinesEl.appendChild(li);
         });
+        if(rows[0].pv&&rows[0].pv.length){
+          const li=document.createElement("li"); li.textContent=`読み筋: ${rows[0].pv.join(" ")}`; analysisLinesEl.appendChild(li);
+        }
+        analysisProgressEl.textContent=`深さ ${rows[0].depth} / ${(rows[0].nodes||0).toLocaleString()}局面`;
       }
-      analysisProgressEl.textContent="";
       analysisBusy=false;
     },30);
-  }
-
-  function onePlyScore(s,m){
-    const rootColor=s.turn===B?1:-1;
-    const ns=applyMove(s,m);
-    if(legalMoves(ns,ns.turn).length===0 && inCheck(ns,ns.turn)) return 999999;
-    return rootColor*materialEval(ns);
   }
 
   function runGameAnalysis(){
@@ -672,34 +989,37 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     const mistakes=[];
     let i=0;
     function step(){
-      const end=Math.min(gameRecords.length,i+5);
-      for(;i<end;i++){
-        const rec=gameRecords[i], s=rec.before;
-        const moves=legalMoves(s,s.turn);
-        let best=-Infinity,bestText="";
-        for(const m of moves){
-          const sc=onePlyScore(s,m);
-          if(sc>best){best=sc;bestText=moveText(s,m);}
-        }
-        const played=onePlyScore(s,rec.move);
-        const loss=best-played;
-        if(loss>=120) mistakes.push({n:i+1,text:rec.text,loss,bestText,side:s.turn});
+      if(i>=gameRecords.length){
+        mistakes.sort((a,b)=>b.loss-a.loss);
+        analysisSummaryEl.textContent=mistakes.length?`評価差が大きかった手を${Math.min(10,mistakes.length)}件表示`:`大きな評価差は検出されませんでした`;
+        mistakes.slice(0,10).forEach(x=>{
+          const li=document.createElement("li");
+          li.textContent=`${x.n}手目 ${x.text}　評価損 ${(x.loss/100).toFixed(2)}　候補: ${x.bestText}`;
+          analysisLinesEl.appendChild(li);
+        });
+        analysisProgressEl.textContent="3〜5手＋静止探索で解析完了";
+        analysisBusy=false; return;
       }
-      analysisProgressEl.textContent=`${i}/${gameRecords.length}手を確認`;
-      if(i<gameRecords.length){ setTimeout(step,0); return; }
-      mistakes.sort((a,b)=>b.loss-a.loss);
-      analysisSummaryEl.textContent=mistakes.length?`大きな評価差が出た手を${Math.min(8,mistakes.length)}件表示`:`大きな評価差は検出されませんでした`;
-      mistakes.slice(0,8).forEach(x=>{
-        const li=document.createElement("li");
-        const d=(x.loss/100).toFixed(2);
-        li.textContent=`${x.n}手目 ${x.text}　差 ${d}　候補: ${x.bestText}`;
-        analysisLinesEl.appendChild(li);
-      });
-      analysisProgressEl.textContent="簡易解析完了（1手読み）";
-      analysisBusy=false;
+      const rec=gameRecords[i], s=cloneState(rec.before);
+      const lm=legalMoves(s,s.turn);
+      if(lm.length>1){
+        const r=iterativeSearch(s,{maxDepth:4,timeMs:Math.min(520,220+lm.length*4),multiPV:Math.min(120,lm.length)});
+        if(r.rows.length){
+          const playedKey=moveKey(rec.move);
+          const played=r.rows.find(x=>moveKey(x.m)===playedKey);
+          if(played){
+            const loss=r.rows[0].score-played.score;
+            if(loss>=90) mistakes.push({n:i+1,text:rec.text,loss,bestText:r.rows[0].text,side:s.turn});
+          }
+        }
+      }
+      i++;
+      analysisProgressEl.textContent=`${i}/${gameRecords.length}手を解析`;
+      setTimeout(step,0);
     }
     setTimeout(step,20);
   }
+
 
   const FW_FILES=["９","８","７","６","５","４","３","２","１"];
   const KAN_RANKS=["一","二","三","四","五","六","七","八","九"];
@@ -796,8 +1116,9 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     busy=true; statusEl.textContent="AI思考中…";
     setTimeout(()=>{
       const mv=chooseAiMove(state,Number(levelEl.value));
+      const info=`深さ${lastSearchStats.depth}・${lastSearchStats.nodes.toLocaleString()}局面`;
       busy=false;
-      if(mv) commitMove(mv);
+      if(mv){ statusEl.textContent=`AI ${info}`; setTimeout(()=>commitMove(mv),30); }
     },40);
   }
 
