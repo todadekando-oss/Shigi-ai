@@ -64,7 +64,8 @@ p { margin: 4px 0 10px; line-height: 1.55; }
   width: min(68vw, 620px);
   aspect-ratio: 1;
   display:grid;
-  grid-template-columns: repeat(9, 1fr);
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  grid-template-rows: repeat(9, minmax(0, 1fr));
   border: 3px solid #5d452c;
   background: #d7a757;
   user-select:none;
@@ -72,6 +73,11 @@ p { margin: 4px 0 10px; line-height: 1.55; }
 }
 .square {
   position:relative;
+  min-width:0;
+  min-height:0;
+  width:100%;
+  height:100%;
+  overflow:hidden;
   display:flex;
   align-items:center;
   justify-content:center;
@@ -131,6 +137,31 @@ p { margin: 4px 0 10px; line-height: 1.55; }
 .count { font-family: ui-sans-serif, system-ui; font-size:12px; }
 .history { max-height: 430px; overflow:auto; padding-left:28px; line-height:1.7; }
 .small { font-size: 12px; color:#65605a; }
+.result-banner {
+  display:none;
+  margin: 0 0 16px;
+  padding: 16px;
+  border-radius: 12px;
+  border: 2px solid #66563d;
+  background:#fff8df;
+  text-align:center;
+  font-weight:900;
+  font-size:24px;
+}
+.result-banner.show { display:block; }
+.result-banner.win { background:#edf8ea; border-color:#4f7c49; }
+.result-banner.lose { background:#fff0ee; border-color:#a85b52; }
+.result-banner.draw { background:#f0f2f5; border-color:#7b8490; }
+.analysis-box { border-top:1px solid #ddd6c7; margin-top:14px; padding-top:12px; }
+.analysis-summary { font-weight:800; margin:8px 0; }
+.analysis-lines { margin:6px 0 10px; padding-left:24px; line-height:1.65; }
+.analysis-progress { font-size:12px; color:#666; min-height:18px; }
+.kifu-input {
+  width:100%; min-height:120px; resize:vertical; border:1px solid #c7beaf; border-radius:8px;
+  padding:8px; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; background:#fff;
+}
+.mini-actions { display:flex; gap:7px; flex-wrap:wrap; margin:8px 0; }
+.mini-actions button { border:1px solid #b9b1a2; background:#fff; padding:7px 10px; border-radius:8px; }
 @media (max-width: 1020px) {
   .app { grid-template-columns: 1fr; }
   .info-panel { order:2; }
@@ -173,7 +204,11 @@ p { margin: 4px 0 10px; line-height: 1.55; }
           </select>
         </label>
         <button id="undo">1手戻す</button>
+        <button id="analyzeNow">局面解析</button>
+        <button id="analyzeGame">棋譜解析</button>
       </div>
+
+      <div id="resultBanner" class="result-banner" aria-live="polite"></div>
 
       <div class="board-wrap">
         <div class="side-column">
@@ -203,6 +238,17 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     <aside class="panel info-panel">
       <h2>棋譜</h2>
       <ol id="history" class="history"></ol>
+      <div class="analysis-box">
+        <h2>解析</h2>
+        <div id="analysisSummary" class="analysis-summary">未解析</div>
+        <ol id="analysisLines" class="analysis-lines"></ol>
+        <div id="analysisProgress" class="analysis-progress"></div>
+        <p class="small">評価値は歩=1.00換算。＋は先手有利、－は後手有利です。自作AIによる簡易解析です。</p>
+        <h2>棋譜を読み込む</h2>
+        <textarea id="kifuInput" class="kifu-input" placeholder="▲２六歩&#10;△３四歩&#10;…"></textarea>
+        <div class="mini-actions"><button id="loadKifu">棋譜を盤面に読み込む</button></div>
+        <div id="kifuMessage" class="small"></div>
+      </div>
       <h2>AIの仕組み</h2>
       <p>各局面の合法手を生成し、駒得・成り・玉の安全・駒の働きを数値化。αβ法で先の局面を探索して最も評価の高い手を選びます。</p>
       <p class="small">強さはPC/スマホ性能に応じて変わります。完全なプロ棋士級ではなく、学習用の自作エンジンです。</p>
@@ -227,6 +273,12 @@ p { margin: 4px 0 10px; line-height: 1.55; }
   const handWEl = document.getElementById("handWhite");
   const historyEl = document.getElementById("history");
   const levelEl = document.getElementById("level");
+  const resultEl = document.getElementById("resultBanner");
+  const analysisSummaryEl = document.getElementById("analysisSummary");
+  const analysisLinesEl = document.getElementById("analysisLines");
+  const analysisProgressEl = document.getElementById("analysisProgress");
+  const kifuInputEl = document.getElementById("kifuInput");
+  const kifuMessageEl = document.getElementById("kifuMessage");
 
   let state = initialState();
   let human = B;
@@ -238,6 +290,8 @@ p { margin: 4px 0 10px; line-height: 1.55; }
   let busy = false;
   let gameOver = true;
   let lastMove = null;
+  let gameRecords = [];
+  let analysisBusy = false;
 
   function piece(type, side) { return { type, side }; }
   function initialState() {
@@ -531,10 +585,191 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     return `${side}${files[c]}${ranks[r]}${JP[p.type]}${m.promote?"成":""}`;
   }
 
+  function sideName(side){ return side===B ? "先手" : "後手"; }
+  function clearResult(){
+    resultEl.className="result-banner";
+    resultEl.textContent="";
+  }
+  function showMateResult(loser){
+    const winner=other(loser);
+    const humanWon=winner===human;
+    resultEl.className=`result-banner show ${humanWon?"win":"lose"}`;
+    resultEl.textContent=`詰み　${humanWon?"あなたの勝利":"AIの勝利"}（${sideName(winner)}勝ち）`;
+    statusEl.textContent=`${sideName(loser)}詰み・${sideName(winner)}勝利`;
+  }
+  function showDrawResult(text){
+    resultEl.className="result-banner show draw";
+    resultEl.textContent=text;
+    statusEl.textContent=text;
+  }
+  function copyMove(m){ return JSON.parse(JSON.stringify(m)); }
+
+  function scoreLabel(blackScore){
+    if(blackScore>900000) return "先手 詰みあり";
+    if(blackScore<-900000) return "後手 詰みあり";
+    const v=blackScore/100;
+    return `${v>=0?"＋":"－"}${Math.abs(v).toFixed(2)}`;
+  }
+
+  function analyzeMoves(s, depth=2, timeMs=1800, topN=3){
+    const moves=legalMoves(s,s.turn);
+    if(!moves.length) return [];
+    const rootColor=s.turn===B?1:-1;
+    searchDeadline=performance.now()+timeMs;
+    stopSearch=false; nodes=0;
+    const ordered=moves.slice().sort((a,b)=>moveOrderingScore(s,b)-moveOrderingScore(s,a));
+    const rows=[];
+    for(const m of ordered){
+      if(performance.now()>searchDeadline) break;
+      stopSearch=false;
+      const ns=applyMove(s,m);
+      const sideScore=-negamax(ns,Math.max(0,depth-1),-Infinity,Infinity,-rootColor,1);
+      if(stopSearch) break;
+      const blackScore=sideScore*rootColor;
+      rows.push({m:copyMove(m), sideScore, blackScore, text:moveText(s,m)});
+    }
+    rows.sort((a,b)=>b.sideScore-a.sideScore);
+    return rows.slice(0,topN);
+  }
+
+  function runCurrentAnalysis(){
+    if(analysisBusy) return;
+    analysisBusy=true;
+    analysisSummaryEl.textContent="解析中…";
+    analysisLinesEl.innerHTML="";
+    analysisProgressEl.textContent="局面を読んでいます";
+    setTimeout(()=>{
+      const depth=Number(levelEl.value)===3?3:2;
+      const rows=analyzeMoves(state,depth,Number(levelEl.value)===3?2600:1500,3);
+      if(!rows.length){
+        analysisSummaryEl.textContent=inCheck(state,state.turn)?`${sideName(state.turn)}は詰みです`:`合法手がありません`;
+      }else{
+        analysisSummaryEl.textContent=`評価 ${scoreLabel(rows[0].blackScore)}　最善候補 ${rows[0].text}`;
+        rows.forEach((x,i)=>{
+          const li=document.createElement("li");
+          li.textContent=`${i+1}. ${x.text}　${scoreLabel(x.blackScore)}`;
+          analysisLinesEl.appendChild(li);
+        });
+      }
+      analysisProgressEl.textContent="";
+      analysisBusy=false;
+    },30);
+  }
+
+  function onePlyScore(s,m){
+    const rootColor=s.turn===B?1:-1;
+    const ns=applyMove(s,m);
+    if(legalMoves(ns,ns.turn).length===0 && inCheck(ns,ns.turn)) return 999999;
+    return rootColor*materialEval(ns);
+  }
+
+  function runGameAnalysis(){
+    if(analysisBusy) return;
+    if(!gameRecords.length){ analysisSummaryEl.textContent="解析できる棋譜がありません"; return; }
+    analysisBusy=true;
+    analysisSummaryEl.textContent="棋譜解析中…";
+    analysisLinesEl.innerHTML="";
+    const mistakes=[];
+    let i=0;
+    function step(){
+      const end=Math.min(gameRecords.length,i+5);
+      for(;i<end;i++){
+        const rec=gameRecords[i], s=rec.before;
+        const moves=legalMoves(s,s.turn);
+        let best=-Infinity,bestText="";
+        for(const m of moves){
+          const sc=onePlyScore(s,m);
+          if(sc>best){best=sc;bestText=moveText(s,m);}
+        }
+        const played=onePlyScore(s,rec.move);
+        const loss=best-played;
+        if(loss>=120) mistakes.push({n:i+1,text:rec.text,loss,bestText,side:s.turn});
+      }
+      analysisProgressEl.textContent=`${i}/${gameRecords.length}手を確認`;
+      if(i<gameRecords.length){ setTimeout(step,0); return; }
+      mistakes.sort((a,b)=>b.loss-a.loss);
+      analysisSummaryEl.textContent=mistakes.length?`大きな評価差が出た手を${Math.min(8,mistakes.length)}件表示`:`大きな評価差は検出されませんでした`;
+      mistakes.slice(0,8).forEach(x=>{
+        const li=document.createElement("li");
+        const d=(x.loss/100).toFixed(2);
+        li.textContent=`${x.n}手目 ${x.text}　差 ${d}　候補: ${x.bestText}`;
+        analysisLinesEl.appendChild(li);
+      });
+      analysisProgressEl.textContent="簡易解析完了（1手読み）";
+      analysisBusy=false;
+    }
+    setTimeout(step,20);
+  }
+
+  const FW_FILES=["９","８","７","６","５","４","３","２","１"];
+  const KAN_RANKS=["一","二","三","四","五","六","七","八","九"];
+  const JP_TYPES=Object.entries(JP).sort((a,b)=>b[1].length-a[1].length);
+  function parseKifuCandidates(line,s){
+    const clean=line.trim().replace(/^\d+[\.．]\s*/,"");
+    if(!clean) return [];
+    const side=clean[0]==="▲"?B:clean[0]==="△"?W:null;
+    if(!side) throw new Error(`先後記号がありません: ${line}`);
+    if(side!==s.turn) return [];
+    const fc=FW_FILES.indexOf(clean[1]), rr=KAN_RANKS.indexOf(clean[2]);
+    if(fc<0||rr<0) throw new Error(`移動先を読めません: ${line}`);
+    const rest=clean.slice(3);
+    const isDrop=rest.endsWith("打"), isProm=rest.endsWith("成");
+    const pieceName=rest.replace(/打$/,'').replace(/成$/,'');
+    const ent=JP_TYPES.find(([t,j])=>j===pieceName);
+    if(!ent) throw new Error(`駒名を読めません: ${line}`);
+    const type=ent[0];
+    return legalMoves(s,s.turn).filter(m=>{
+      if(m.to[0]!==rr||m.to[1]!==fc) return false;
+      if(isDrop) return m.drop===type;
+      if(m.drop) return false;
+      const p=s.board[m.from[0]][m.from[1]];
+      return p && p.type===type && !!m.promote===isProm;
+    });
+  }
+
+  function loadKifuText(){
+    const lines=kifuInputEl.value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+    if(!lines.length){ kifuMessageEl.textContent="棋譜を貼り付けてください"; return; }
+    try{
+      let branches=[{s:initialState(),recs:[]}];
+      for(let i=0;i<lines.length;i++){
+        const next=[];
+        for(const br of branches){
+          const cand=parseKifuCandidates(lines[i],br.s);
+          for(const m of cand){
+            const txt=moveText(br.s,m);
+            const rec={before:cloneState(br.s),move:copyMove(m),text:txt};
+            const ns=applyMove(br.s,m); ns.history.push(txt);
+            next.push({s:ns,recs:br.recs.concat([rec])});
+            if(next.length>=120) break;
+          }
+          if(next.length>=120) break;
+        }
+        if(!next.length) throw new Error(`${i+1}手目を再現できません: ${lines[i]}`);
+        // 同一局面をまとめ、曖昧な棋譜でも後続手で絞り込めるようにする。
+        const uniq=new Map();
+        for(const br of next){ const k=positionKey(br.s); if(!uniq.has(k)) uniq.set(k,br); }
+        branches=[...uniq.values()].slice(0,60);
+        kifuMessageEl.textContent=`${i+1}/${lines.length}手を確認中…`;
+      }
+      const br=branches[0], s=br.s, recs=br.recs;
+      state=s; gameRecords=recs; snapshots=[]; lastMove=recs.length?copyMove(recs[recs.length-1].move):null;
+      selected=null; selectedHand=null; candidateMoves=[]; busy=false;
+      repetition=new Map(); repetition.set(positionKey(state),1);
+      const lm=legalMoves(state,state.turn);
+      gameOver=lm.length===0;
+      clearResult(); render();
+      if(gameOver && inCheck(state,state.turn)) showMateResult(state.turn);
+      else if(gameOver) showDrawResult("終局");
+      kifuMessageEl.textContent=`${recs.length}手を読み込みました${branches.length>1?`（${branches.length}通りの再現候補）`:""}`;
+    }catch(e){ kifuMessageEl.textContent=`読み込みエラー: ${e.message}`; }
+  }
+
   function commitMove(m){
     if(gameOver) return;
     snapshots.push({state:cloneState(state), lastMove:lastMove ? JSON.parse(JSON.stringify(lastMove)) : null});
     const text=moveText(state,m);
+    gameRecords.push({before:cloneState(state), move:copyMove(m), text});
     state=applyMove(state,m);
     state.history.push(text);
     lastMove=m;
@@ -542,13 +777,14 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     const key=positionKey(state);
     repetition.set(key,(repetition.get(key)||0)+1);
     if(repetition.get(key)>=4){
-      gameOver=true; render(); statusEl.textContent="千日手（簡易判定）"; return;
+      gameOver=true; render(); showDrawResult("千日手（簡易判定）"); return;
     }
     const lm=legalMoves(state,state.turn);
     if(lm.length===0){
       gameOver=true;
       render();
-      statusEl.textContent=inCheck(state,state.turn) ? `${state.turn===B?"先手":"後手"}の詰み` : "終局";
+      if(inCheck(state,state.turn)) showMateResult(state.turn);
+      else showDrawResult("終局");
       return;
     }
     render();
@@ -569,7 +805,9 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     human=side;
     state=initialState();
     snapshots=[]; repetition=new Map(); repetition.set(positionKey(state),1);
-    selected=null; selectedHand=null; candidateMoves=[]; lastMove=null; busy=false; gameOver=false;
+    selected=null; selectedHand=null; candidateMoves=[]; lastMove=null; busy=false; gameOver=false; gameRecords=[];
+    clearResult();
+    analysisSummaryEl.textContent="未解析"; analysisLinesEl.innerHTML=""; analysisProgressEl.textContent="";
     render(); maybeAi();
   }
 
@@ -649,12 +887,16 @@ p { margin: 4px 0 10px; line-height: 1.55; }
 
   document.getElementById("startBlack").addEventListener("click",()=>start(B));
   document.getElementById("startWhite").addEventListener("click",()=>start(W));
+  document.getElementById("analyzeNow").addEventListener("click",runCurrentAnalysis);
+  document.getElementById("analyzeGame").addEventListener("click",runGameAnalysis);
+  document.getElementById("loadKifu").addEventListener("click",loadKifuText);
   document.getElementById("undo").addEventListener("click",()=>{
     if(busy || snapshots.length===0) return;
     // 人間の手番まで戻す（通常はAI＋人間の2手）
     let snap=snapshots.pop(); state=snap.state; lastMove=snap.lastMove;
     if(state.turn!==human && snapshots.length){ snap=snapshots.pop(); state=snap.state; lastMove=snap.lastMove; }
     gameOver=false; selected=null; selectedHand=null; candidateMoves=[];
+    gameRecords.length=state.history.length; clearResult();
     repetition=new Map(); repetition.set(positionKey(state),1); render();
   });
 
