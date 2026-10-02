@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>自作将棋AI対局 v3</title>
+  <title>自作将棋AI対局 v4</title>
   <style>
 :root {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
@@ -156,6 +156,20 @@ p { margin: 4px 0 10px; line-height: 1.55; }
 .analysis-summary { font-weight:800; margin:8px 0; }
 .analysis-lines { margin:6px 0 10px; padding-left:24px; line-height:1.65; }
 .analysis-progress { font-size:12px; color:#666; min-height:18px; }
+.thinking-box { border-top:1px solid #ddd6c7; margin-top:14px; padding-top:12px; }
+.thinking-status { font-weight:800; margin:5px 0 8px; }
+.thinking-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; font-size:12px; margin-bottom:8px; }
+.thinking-grid div { background:#f7f5ef; border:1px solid #e1d9ca; border-radius:7px; padding:6px 7px; }
+.thinking-pv { font-size:12px; line-height:1.55; word-break:break-word; background:#fbfaf7; border-radius:7px; padding:7px; min-height:32px; }
+.thinking-candidates { margin:7px 0 0; padding-left:24px; font-size:12px; line-height:1.55; }
+.analysis-details { display:grid; gap:7px; margin-top:9px; max-height:520px; overflow:auto; }
+.analysis-card { border:1px solid #ddd5c5; border-radius:9px; padding:8px; background:#fbfaf7; }
+.analysis-card.bad { border-left:5px solid #a95249; }
+.analysis-card.warn { border-left:5px solid #b88b32; }
+.analysis-card.good { border-left:5px solid #5d8a58; }
+.analysis-card-title { font-weight:800; margin-bottom:3px; }
+.analysis-card-meta { font-size:12px; line-height:1.55; color:#4f4b44; }
+.resign { border-color:#9d4c46 !important; color:#8d302b; }
 .kifu-input {
   width:100%; min-height:120px; resize:vertical; border:1px solid #c7beaf; border-radius:8px;
   padding:8px; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; background:#fff;
@@ -187,7 +201,7 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     <section class="panel game-panel">
       <div class="title-row">
         <div>
-          <h1>自作将棋AI対局 v3</h1>
+          <h1>自作将棋AI対局 v4</h1>
           <p>外部エンジン不使用。置換表・反復深化・静止探索・手順並べ替えを含む自作エンジン。</p>
         </div>
         <div id="status" class="status">対局を開始してください</div>
@@ -205,6 +219,7 @@ p { margin: 4px 0 10px; line-height: 1.55; }
           </select>
         </label>
         <button id="undo">1手戻す</button>
+        <button id="resign" class="resign">投了</button>
         <button id="analyzeNow">局面解析</button>
         <button id="analyzeGame">棋譜解析</button>
       </div>
@@ -239,10 +254,24 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     <aside class="panel info-panel">
       <h2>棋譜</h2>
       <ol id="history" class="history"></ol>
+      <div class="thinking-box">
+        <h2>AI思考</h2>
+        <div id="thinkingStatus" class="thinking-status">待機中</div>
+        <div class="thinking-grid">
+          <div>深さ <strong id="thinkingDepth">-</strong></div>
+          <div>評価 <strong id="thinkingScore">-</strong></div>
+          <div>探索局面 <strong id="thinkingNodes">-</strong></div>
+          <div>速度 <strong id="thinkingNps">-</strong></div>
+        </div>
+        <div id="thinkingPv" class="thinking-pv">AIが考えた読み筋をここに表示します。</div>
+        <ol id="thinkingCandidates" class="thinking-candidates"></ol>
+        <p class="small">これは自作エンジンの探索統計・候補手・読み筋です。自然言語の思考過程ではありません。</p>
+      </div>
       <div class="analysis-box">
         <h2>解析</h2>
         <div id="analysisSummary" class="analysis-summary">未解析</div>
         <ol id="analysisLines" class="analysis-lines"></ol>
+        <div id="analysisDetails" class="analysis-details"></div>
         <div id="analysisProgress" class="analysis-progress"></div>
         <p class="small">評価値は歩=1.00換算。＋は先手有利、－は後手有利です。自作AIによる簡易解析です。</p>
         <h2>棋譜を読み込む</h2>
@@ -301,6 +330,14 @@ p { margin: 4px 0 10px; line-height: 1.55; }
   const analysisSummaryEl = document.getElementById("analysisSummary");
   const analysisLinesEl = document.getElementById("analysisLines");
   const analysisProgressEl = document.getElementById("analysisProgress");
+  const analysisDetailsEl = document.getElementById("analysisDetails");
+  const thinkingStatusEl = document.getElementById("thinkingStatus");
+  const thinkingDepthEl = document.getElementById("thinkingDepth");
+  const thinkingScoreEl = document.getElementById("thinkingScore");
+  const thinkingNodesEl = document.getElementById("thinkingNodes");
+  const thinkingNpsEl = document.getElementById("thinkingNps");
+  const thinkingPvEl = document.getElementById("thinkingPv");
+  const thinkingCandidatesEl = document.getElementById("thinkingCandidates");
   const kifuInputEl = document.getElementById("kifuInput");
   const kifuMessageEl = document.getElementById("kifuMessage");
 
@@ -316,6 +353,7 @@ p { margin: 4px 0 10px; line-height: 1.55; }
   let lastMove = null;
   let gameRecords = [];
   let analysisBusy = false;
+  let gameSerial = 0;
 
   function piece(type, side) { return { type, side }; }
   function initialState() {
@@ -849,6 +887,19 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     return pv;
   }
 
+  function pvFromRootMove(s,m,maxLen=12){
+    if(!m) return [];
+    const pv=[moveText(s,m)], undos=[];
+    let u=makeMoveInPlace(s,m); undos.push([m,u]);
+    for(let i=1;i<maxLen;i++){
+      const e=TT.get(positionKey(s)); if(!e||!e.best) break;
+      const moves=legalMoves(s,s.turn); const nx=moves.find(x=>moveKey(x)===e.best); if(!nx) break;
+      pv.push(moveText(s,nx)); u=makeMoveInPlace(s,nx); undos.push([nx,u]);
+    }
+    for(let i=undos.length-1;i>=0;i--) unmakeMoveInPlace(s,undos[i][0],undos[i][1]);
+    return pv;
+  }
+
   function searchRoot(s,depth,alpha,beta,preferredKey=null){
     let moves=legalMoves(s,s.turn);
     if(!moves.length) return {bestMove:null,score:inCheck(s,s.turn)?-MATE:0,rows:[]};
@@ -873,10 +924,14 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     return {bestMove:copyMove(bestMove),score:best,rows};
   }
 
-  function iterativeSearch(s,{maxDepth,timeMs,multiPV=3}={}){
+  function prepareSearch(s,timeMs){
     searchDeadline=performance.now()+timeMs; stopSearch=false; nodes=0;qnodes=0;
     killers=Array.from({length:80},()=>[null,null]); historyHeuristic.clear();
     const rootKey=positionKey(s); pathCount=new Map([[rootKey,1]]);
+  }
+
+  function iterativeSearch(s,{maxDepth,timeMs,multiPV=3}={}){
+    prepareSearch(s,timeMs);
     let bestMove=null,bestScore=0,completed=0,finalRows=[]; let pref=rootBestKey;
     for(let d=1;d<=maxDepth;d++){
       stopSearch=false;
@@ -893,15 +948,66 @@ p { margin: 4px 0 10px; line-height: 1.55; }
       if(Math.abs(bestScore)>MATE-500) break;
       if(performance.now()>searchDeadline) break;
     }
-    const pv=extractPV(s,12);
-    lastSearchStats={depth:completed,nodes:nodes+qnodes,score:bestScore,pv};
+    const pv=pvFromRootMove(s,bestMove,12);
+    lastSearchStats={depth:completed,nodes:nodes+qnodes,score:bestScore,pv,rows:finalRows.slice(0,multiPV)};
     return {bestMove,bestScore,depth:completed,nodes:nodes+qnodes,pv,rows:finalRows.slice(0,multiPV)};
   }
 
-  function chooseAiMove(s,level){
+  function thinkingScoreLabel(score){
+    if(score>MATE-500) return "詰みあり";
+    if(score<-MATE+500) return "被詰み";
+    return `${score>=0?"＋":"－"}${Math.abs(score/100).toFixed(2)}（AI視点）`;
+  }
+
+  function showThinking(info){
+    if(!info){
+      thinkingStatusEl.textContent="待機中"; thinkingDepthEl.textContent="-"; thinkingScoreEl.textContent="-";
+      thinkingNodesEl.textContent="-"; thinkingNpsEl.textContent="-"; thinkingPvEl.textContent="AIが考えた読み筋をここに表示します。";
+      thinkingCandidatesEl.innerHTML=""; return;
+    }
+    thinkingStatusEl.textContent=info.searching?`思考中… 深さ${info.depth}まで完了`:`思考完了・採用 ${info.bestText||"-"}`;
+    thinkingDepthEl.textContent=String(info.depth||0);
+    thinkingScoreEl.textContent=thinkingScoreLabel(info.score||0);
+    thinkingNodesEl.textContent=(info.nodes||0).toLocaleString();
+    const sec=Math.max(.001,(info.elapsedMs||0)/1000),nps=Math.round((info.nodes||0)/sec);
+    thinkingNpsEl.textContent=nps.toLocaleString()+"/秒";
+    thinkingPvEl.textContent=info.pv&&info.pv.length?`読み筋: ${info.pv.join(" ")}`:"読み筋: -";
+    thinkingCandidatesEl.innerHTML="";
+    (info.rows||[]).slice(0,3).forEach((x,i)=>{
+      const li=document.createElement("li");
+      li.textContent=`${i+1}. ${x.text}　${thinkingScoreLabel(x.score)}`;
+      thinkingCandidatesEl.appendChild(li);
+    });
+  }
+
+  async function chooseAiMove(s,level){
     const cfg=level===1?{maxDepth:3,timeMs:450}:level===2?{maxDepth:5,timeMs:1500}:level===3?{maxDepth:7,timeMs:4200}:{maxDepth:9,timeMs:8000};
-    const r=iterativeSearch(s,{...cfg,multiPV:3});
-    return r.bestMove;
+    const started=performance.now(); prepareSearch(s,cfg.timeMs);
+    let bestMove=null,bestScore=0,completed=0,finalRows=[]; let pref=rootBestKey;
+    showThinking({searching:true,depth:0,score:0,nodes:0,elapsedMs:1,pv:[],rows:[]});
+    for(let d=1;d<=cfg.maxDepth;d++){
+      if(gameOver) break;
+      stopSearch=false; let alpha=-INF,beta=INF;
+      if(d>=3&&completed){alpha=bestScore-140;beta=bestScore+140;}
+      let r=searchRoot(s,d,alpha,beta,pref);
+      if(stopSearch||gameOver) break;
+      if(r.score<=alpha||r.score>=beta){
+        r=searchRoot(s,d,-INF,INF,pref);
+        if(stopSearch||gameOver) break;
+      }
+      completed=d;bestMove=r.bestMove;bestScore=r.score;finalRows=r.rows;pref=bestMove?moveKey(bestMove):pref;rootBestKey=pref;
+      const pv=pvFromRootMove(s,bestMove,12);
+      const elapsedMs=performance.now()-started;
+      lastSearchStats={depth:completed,nodes:nodes+qnodes,score:bestScore,pv,rows:finalRows.slice(0,3)};
+      showThinking({searching:true,depth:completed,score:bestScore,nodes:nodes+qnodes,elapsedMs,pv,rows:finalRows.slice(0,3),bestText:bestMove?moveText(s,bestMove):"-"});
+      await new Promise(resolve=>setTimeout(resolve,0));
+      if(Math.abs(bestScore)>MATE-500||performance.now()>searchDeadline) break;
+    }
+    const elapsedMs=performance.now()-started;
+    const pv=pvFromRootMove(s,bestMove,12);
+    lastSearchStats={depth:completed,nodes:nodes+qnodes,score:bestScore,pv,rows:finalRows.slice(0,3)};
+    showThinking({searching:false,depth:completed,score:bestScore,nodes:nodes+qnodes,elapsedMs,pv,rows:finalRows.slice(0,3),bestText:bestMove?moveText(s,bestMove):"-"});
+    return bestMove;
   }
 
   function moveOrderingScore(s,m){ return orderingScore(s,m,null,0,false); }
@@ -948,7 +1054,7 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     const rootSign=s.turn===B?1:-1;
     return r.rows.slice(0,topN).map(x=>({
       m:copyMove(x.m), sideScore:x.score, blackScore:x.score*rootSign, text:x.text,
-      depth:r.depth,nodes:r.nodes,pv:r.pv
+      depth:r.depth,nodes:r.nodes,pv:pvFromRootMove(s,x.m,10)
     }));
   }
 
@@ -957,6 +1063,7 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     analysisBusy=true;
     analysisSummaryEl.textContent="解析中…";
     analysisLinesEl.innerHTML="";
+    analysisDetailsEl.innerHTML="";
     analysisProgressEl.textContent="置換表＋静止探索で読んでいます";
     setTimeout(()=>{
       const lv=Number(levelEl.value);
@@ -968,16 +1075,31 @@ p { margin: 4px 0 10px; line-height: 1.55; }
         analysisSummaryEl.textContent=`評価 ${scoreLabel(rows[0].blackScore)}　最善候補 ${rows[0].text}`;
         rows.forEach((x,i)=>{
           const li=document.createElement("li");
-          li.textContent=`${i+1}. ${x.text}　${scoreLabel(x.blackScore)}`;
+          li.textContent=`${i+1}. ${x.text}　${scoreLabel(x.blackScore)}　読み筋: ${x.pv.length?x.pv.join(" "):"-"}`;
           analysisLinesEl.appendChild(li);
         });
-        if(rows[0].pv&&rows[0].pv.length){
-          const li=document.createElement("li"); li.textContent=`読み筋: ${rows[0].pv.join(" ")}`; analysisLinesEl.appendChild(li);
-        }
         analysisProgressEl.textContent=`深さ ${rows[0].depth} / ${(rows[0].nodes||0).toLocaleString()}局面`;
       }
       analysisBusy=false;
     },30);
+  }
+
+  function analysisClass(loss){
+    if(loss>=300) return ["大悪手","bad"];
+    if(loss>=150) return ["悪手","bad"];
+    if(loss>=75) return ["疑問手","warn"];
+    if(loss>=30) return ["小さな損","warn"];
+    return ["ほぼ最善","good"];
+  }
+
+  function appendAnalysisCard(x){
+    const [label,cls]=analysisClass(x.loss);
+    const card=document.createElement("div"); card.className=`analysis-card ${cls}`;
+    const title=document.createElement("div"); title.className="analysis-card-title";
+    title.textContent=`${x.n}手目 ${x.text}　${label}（評価損 ${(x.loss/100).toFixed(2)}）`;
+    const meta=document.createElement("div"); meta.className="analysis-card-meta";
+    meta.textContent=`実戦手評価 ${scoreLabel(x.playedBlack)} / 最善手評価 ${scoreLabel(x.bestBlack)} / 最善候補 ${x.bestText}${x.bestPv.length?` / 読み筋 ${x.bestPv.join(" ")}`:""}`;
+    card.appendChild(title); card.appendChild(meta); analysisDetailsEl.appendChild(card);
   }
 
   function runGameAnalysis(){
@@ -985,37 +1107,37 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     if(!gameRecords.length){ analysisSummaryEl.textContent="解析できる棋譜がありません"; return; }
     analysisBusy=true;
     analysisSummaryEl.textContent="棋譜解析中…";
-    analysisLinesEl.innerHTML="";
-    const mistakes=[];
-    let i=0;
+    analysisLinesEl.innerHTML=""; analysisDetailsEl.innerHTML="";
+    const results=[]; let i=0;
     function step(){
       if(i>=gameRecords.length){
-        mistakes.sort((a,b)=>b.loss-a.loss);
-        analysisSummaryEl.textContent=mistakes.length?`評価差が大きかった手を${Math.min(10,mistakes.length)}件表示`:`大きな評価差は検出されませんでした`;
-        mistakes.slice(0,10).forEach(x=>{
+        const ranked=results.slice().sort((a,b)=>b.loss-a.loss);
+        const notable=ranked.filter(x=>x.loss>=75);
+        analysisSummaryEl.textContent=`${gameRecords.length}手を解析。疑問手以上 ${notable.length}件`;
+        ranked.slice(0,10).forEach(x=>{
           const li=document.createElement("li");
-          li.textContent=`${x.n}手目 ${x.text}　評価損 ${(x.loss/100).toFixed(2)}　候補: ${x.bestText}`;
+          li.textContent=`${x.n}手目 ${x.text}　評価損 ${(x.loss/100).toFixed(2)}　候補 ${x.bestText}`;
           analysisLinesEl.appendChild(li);
         });
-        analysisProgressEl.textContent="3〜5手＋静止探索で解析完了";
+        results.forEach(appendAnalysisCard);
+        analysisProgressEl.textContent="各手を3〜5手＋静止探索で解析。下段に全手の評価を表示";
         analysisBusy=false; return;
       }
       const rec=gameRecords[i], s=cloneState(rec.before);
       const lm=legalMoves(s,s.turn);
-      if(lm.length>1){
-        const r=iterativeSearch(s,{maxDepth:4,timeMs:Math.min(520,220+lm.length*4),multiPV:Math.min(120,lm.length)});
+      if(lm.length>0){
+        const maxDepth=lm.length>65?3:4;
+        const r=iterativeSearch(s,{maxDepth,timeMs:Math.min(760,300+lm.length*5),multiPV:Math.min(140,lm.length)});
         if(r.rows.length){
           const playedKey=moveKey(rec.move);
           const played=r.rows.find(x=>moveKey(x.m)===playedKey);
           if(played){
-            const loss=r.rows[0].score-played.score;
-            if(loss>=90) mistakes.push({n:i+1,text:rec.text,loss,bestText:r.rows[0].text,side:s.turn});
+            const best=r.rows[0], loss=Math.max(0,best.score-played.score), sign=s.turn===B?1:-1;
+            results.push({n:i+1,text:rec.text,loss,bestText:best.text,bestBlack:best.score*sign,playedBlack:played.score*sign,bestPv:pvFromRootMove(s,best.m,8)});
           }
         }
       }
-      i++;
-      analysisProgressEl.textContent=`${i}/${gameRecords.length}手を解析`;
-      setTimeout(step,0);
+      i++; analysisProgressEl.textContent=`${i}/${gameRecords.length}手を解析`; setTimeout(step,0);
     }
     setTimeout(step,20);
   }
@@ -1075,6 +1197,7 @@ p { margin: 4px 0 10px; line-height: 1.55; }
       const br=branches[0], s=br.s, recs=br.recs;
       state=s; gameRecords=recs; snapshots=[]; lastMove=recs.length?copyMove(recs[recs.length-1].move):null;
       selected=null; selectedHand=null; candidateMoves=[]; busy=false;
+      showThinking(null); analysisDetailsEl.innerHTML="";
       repetition=new Map(); repetition.set(positionKey(state),1);
       const lm=legalMoves(state,state.turn);
       gameOver=lm.length===0;
@@ -1114,21 +1237,38 @@ p { margin: 4px 0 10px; line-height: 1.55; }
   function maybeAi(){
     if(gameOver || state.turn===human || busy) return;
     busy=true; statusEl.textContent="AI思考中…";
-    setTimeout(()=>{
-      const mv=chooseAiMove(state,Number(levelEl.value));
+    const serial=gameSerial, searchState=state;
+    setTimeout(async()=>{
+      const mv=await chooseAiMove(searchState,Number(levelEl.value));
       const info=`深さ${lastSearchStats.depth}・${lastSearchStats.nodes.toLocaleString()}局面`;
+      if(serial!==gameSerial || state!==searchState){ return; }
       busy=false;
-      if(mv){ statusEl.textContent=`AI ${info}`; setTimeout(()=>commitMove(mv),30); }
+      if(gameOver) return;
+      if(mv){ statusEl.textContent=`AI ${info}`; setTimeout(()=>{if(serial===gameSerial&&!gameOver&&state===searchState)commitMove(mv)},30); }
     },40);
   }
 
+  function resignGame(){
+    if(gameOver) return;
+    if(!confirm("投了しますか？")) return;
+    gameSerial++; gameOver=true; stopSearch=true; busy=false; selected=null; selectedHand=null; candidateMoves=[];
+    const winner=other(human);
+    resultEl.className="result-banner show lose";
+    resultEl.textContent=`投了　あなたの敗北（${sideName(winner)}・AI勝ち）`;
+    statusEl.textContent=`${sideName(human)}投了・${sideName(winner)}勝利`;
+    thinkingStatusEl.textContent="対局終了";
+    render();
+  }
+
   function start(side){
+    gameSerial++; stopSearch=true;
     human=side;
     state=initialState();
     snapshots=[]; repetition=new Map(); repetition.set(positionKey(state),1);
     selected=null; selectedHand=null; candidateMoves=[]; lastMove=null; busy=false; gameOver=false; gameRecords=[];
     clearResult();
-    analysisSummaryEl.textContent="未解析"; analysisLinesEl.innerHTML=""; analysisProgressEl.textContent="";
+    analysisSummaryEl.textContent="未解析"; analysisLinesEl.innerHTML=""; analysisDetailsEl.innerHTML=""; analysisProgressEl.textContent="";
+    showThinking(null);
     render(); maybeAi();
   }
 
@@ -1208,6 +1348,7 @@ p { margin: 4px 0 10px; line-height: 1.55; }
 
   document.getElementById("startBlack").addEventListener("click",()=>start(B));
   document.getElementById("startWhite").addEventListener("click",()=>start(W));
+  document.getElementById("resign").addEventListener("click",resignGame);
   document.getElementById("analyzeNow").addEventListener("click",runCurrentAnalysis);
   document.getElementById("analyzeGame").addEventListener("click",runGameAnalysis);
   document.getElementById("loadKifu").addEventListener("click",loadKifuText);
