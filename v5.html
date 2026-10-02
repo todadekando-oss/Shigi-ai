@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>自作将棋AI対局 v5 - エミリア応援版</title>
+  <title>自作将棋AI対局 v5.2 - エミリア応援版</title>
   <style>
 :root {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
@@ -153,6 +153,27 @@ p { margin: 4px 0 10px; line-height: 1.55; }
 .result-banner.lose { background:#fff0ee; border-color:#a85b52; }
 .result-banner.draw { background:#f0f2f5; border-color:#7b8490; }
 .analysis-box { border-top:1px solid #ddd6c7; margin-top:14px; padding-top:12px; }
+.analysis-title-row {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  margin-bottom:4px;
+}
+.analysis-title-row h2 { margin:8px 0 6px; }
+.copy-analysis-btn {
+  border:1px solid #9b8450;
+  background:#fffaf0;
+  color:#4d3b18;
+  padding:7px 10px;
+  border-radius:8px;
+  font-weight:800;
+  cursor:pointer;
+  white-space:nowrap;
+}
+.copy-analysis-btn:active { transform:translateY(1px); }
+.copy-analysis-btn.copied { background:#edf8ea; border-color:#6e9468; color:#315b2d; }
+.copy-analysis-btn.error { background:#fff0ee; border-color:#b36d65; color:#813c35; }
 .analysis-summary { font-weight:800; margin:8px 0; }
 .analysis-lines { margin:6px 0 10px; padding-left:24px; line-height:1.65; }
 .analysis-progress { font-size:12px; color:#666; min-height:18px; }
@@ -282,7 +303,7 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     <section class="panel game-panel">
       <div class="title-row">
         <div>
-          <h1>自作将棋AI対局 v5</h1>
+          <h1>自作将棋AI対局 v5.2</h1>
           <p>外部エンジン不使用の自作将棋AI。王女エミリアが、あなた側の応援役として局面に反応します。</p>
         </div>
         <div id="status" class="status">対局を開始してください</div>
@@ -293,8 +314,8 @@ p { margin: 4px 0 10px; line-height: 1.55; }
         <button id="startWhite">後手で開始</button>
         <label>AI強さ
           <select id="level">
-            <option value="1">速い</option>
-            <option value="2">普通</option>
+            <option value="1">&#12420;&#12373;&#12375;&#12356;&#65288;&#12511;&#12473;&#12354;&#12426;&#65289;</option>
+            <option value="2">&#26222;&#36890;&#65288;&#23569;&#12375;&#12511;&#12473;&#12354;&#12426;&#65289;</option>
             <option value="3" selected>強い</option>
             <option value="4">本気（最大8秒）</option>
           </select>
@@ -363,7 +384,10 @@ p { margin: 4px 0 10px; line-height: 1.55; }
         <p class="small">これは自作エンジンの探索統計・候補手・読み筋です。自然言語の思考過程ではありません。</p>
       </div>
       <div class="analysis-box">
-        <h2>解析</h2>
+        <div class="analysis-title-row">
+          <h2>解析</h2>
+          <button id="copyAnalysis" class="copy-analysis-btn" type="button">解析結果をコピー</button>
+        </div>
         <div id="analysisSummary" class="analysis-summary">未解析</div>
         <ol id="analysisLines" class="analysis-lines"></ol>
         <div id="analysisDetails" class="analysis-details"></div>
@@ -1086,8 +1110,48 @@ p { margin: 4px 0 10px; line-height: 1.55; }
     });
   }
 
+  function chooseDifficultyMove(rows,bestMove,level){
+    if(level>=3 || !bestMove || !rows || !rows.length){
+      return {move:bestMove,score:rows&&rows.length?rows[0].score:0};
+    }
+    const sorted=rows.slice().sort((a,b)=>b.score-a.score);
+    const bestScore=sorted[0].score;
+    const maxLoss=level===1?280:140;
+    const viable=sorted.filter(x=>{
+      const loss=bestScore-x.score;
+      return loss>=0 && loss<=maxLoss;
+    });
+    if(viable.length<=1) return {move:bestMove,score:bestScore};
+
+    const r=Math.random();
+    let lo,hi;
+    if(level===1){
+      if(r<0.30){ lo=0; hi=25; }
+      else if(r<0.65){ lo=25; hi=90; }
+      else if(r<0.90){ lo=90; hi=180; }
+      else { lo=180; hi=280; }
+    }else{
+      if(r<0.60){ lo=0; hi=20; }
+      else if(r<0.88){ lo=20; hi=70; }
+      else { lo=70; hi=140; }
+    }
+
+    let pool=viable.filter(x=>{
+      const loss=bestScore-x.score;
+      return loss>=lo && loss<=hi;
+    });
+    if(!pool.length){
+      const mid=(lo+hi)/2;
+      pool=viable.slice().sort((a,b)=>
+        Math.abs((bestScore-a.score)-mid)-Math.abs((bestScore-b.score)-mid)
+      ).slice(0,Math.min(3,viable.length));
+    }
+    const picked=pool[Math.floor(Math.random()*pool.length)] || sorted[0];
+    return {move:copyMove(picked.m),score:picked.score};
+  }
+
   async function chooseAiMove(s,level){
-    const cfg=level===1?{maxDepth:3,timeMs:450}:level===2?{maxDepth:5,timeMs:1500}:level===3?{maxDepth:7,timeMs:4200}:{maxDepth:9,timeMs:8000};
+    const cfg=level===1?{maxDepth:2,timeMs:220}:level===2?{maxDepth:4,timeMs:900}:level===3?{maxDepth:7,timeMs:4200}:{maxDepth:9,timeMs:8000};
     const started=performance.now(); prepareSearch(s,cfg.timeMs);
     let bestMove=null,bestScore=0,completed=0,finalRows=[]; let pref=rootBestKey;
     showThinking({searching:true,depth:0,score:0,nodes:0,elapsedMs:1,pv:[],rows:[]});
@@ -1110,10 +1174,13 @@ p { margin: 4px 0 10px; line-height: 1.55; }
       if(Math.abs(bestScore)>MATE-500||performance.now()>searchDeadline) break;
     }
     const elapsedMs=performance.now()-started;
-    const pv=pvFromRootMove(s,bestMove,12);
-    lastSearchStats={depth:completed,nodes:nodes+qnodes,score:bestScore,pv,rows:finalRows.slice(0,3)};
-    showThinking({searching:false,depth:completed,score:bestScore,nodes:nodes+qnodes,elapsedMs,pv,rows:finalRows.slice(0,3),bestText:bestMove?moveText(s,bestMove):"-"});
-    return bestMove;
+    const choice=chooseDifficultyMove(finalRows,bestMove,level);
+    const chosenMove=choice.move||bestMove;
+    const chosenScore=chosenMove?choice.score:bestScore;
+    const pv=pvFromRootMove(s,chosenMove,12);
+    lastSearchStats={depth:completed,nodes:nodes+qnodes,score:chosenScore,pv,rows:finalRows.slice(0,3)};
+    showThinking({searching:false,depth:completed,score:chosenScore,nodes:nodes+qnodes,elapsedMs,pv,rows:finalRows.slice(0,3),bestText:chosenMove?moveText(s,chosenMove):"-"});
+    return chosenMove;
   }
 
   function moveOrderingScore(s,m){ return orderingScore(s,m,null,0,false); }
@@ -1195,6 +1262,94 @@ p { margin: 4px 0 10px; line-height: 1.55; }
       }
       analysisBusy=false;
     },30);
+  }
+
+  function buildAnalysisCopyText(){
+    const summary=(analysisSummaryEl.textContent||"").trim();
+    if(!summary || summary==="未解析" || summary.includes("解析中")) return "";
+
+    const out=[];
+    out.push("【自作将棋AI v5.2 解析結果】");
+    out.push(`あなた：${sideName(human)} / 現在：${state.moveNo}手目 ${sideName(state.turn)}番`);
+
+    if(state.history.length){
+      out.push("", "【棋譜】");
+      state.history.forEach((t,i)=>out.push(`${i+1}. ${t}`));
+    }
+
+    out.push("", "【解析概要】", summary);
+
+    const lines=[...analysisLinesEl.querySelectorAll("li")]
+      .map(li=>(li.textContent||"").trim())
+      .filter(Boolean);
+    if(lines.length){
+      out.push("", "【注目手・候補】");
+      lines.forEach(t=>out.push(t));
+    }
+
+    const cards=[...analysisDetailsEl.querySelectorAll(".analysis-card")].map(card=>{
+      const title=(card.querySelector(".analysis-card-title")?.textContent||"").trim();
+      const meta=(card.querySelector(".analysis-card-meta")?.textContent||"").trim();
+      return [title,meta].filter(Boolean).join("\n  ");
+    }).filter(Boolean);
+    if(cards.length){
+      out.push("", "【全手評価】");
+      cards.forEach(t=>out.push(t));
+    }
+
+    const progress=(analysisProgressEl.textContent||"").trim();
+    if(progress) out.push("", `解析情報: ${progress}`);
+    return out.join("\n");
+  }
+
+  function fallbackCopyText(text){
+    const ta=document.createElement("textarea");
+    ta.value=text;
+    ta.setAttribute("readonly","");
+    ta.style.position="fixed";
+    ta.style.left="-9999px";
+    ta.style.top="0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0,ta.value.length);
+    let ok=false;
+    try{ ok=document.execCommand("copy"); }catch(_e){ ok=false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  async function copyAnalysisResult(){
+    const btn=document.getElementById("copyAnalysis");
+    const original="解析結果をコピー";
+    const text=buildAnalysisCopyText();
+    if(!text){
+      btn.textContent="先に解析してください";
+      btn.classList.remove("copied");
+      btn.classList.add("error");
+      setTimeout(()=>{ btn.textContent=original; btn.classList.remove("error"); },1800);
+      return;
+    }
+
+    let ok=false;
+    try{
+      if(navigator.clipboard && window.isSecureContext){
+        await navigator.clipboard.writeText(text);
+        ok=true;
+      }else{
+        ok=fallbackCopyText(text);
+      }
+    }catch(_e){
+      ok=fallbackCopyText(text);
+    }
+
+    btn.textContent=ok ? "コピーしました ✓" : "コピーできませんでした";
+    btn.classList.toggle("copied",ok);
+    btn.classList.toggle("error",!ok);
+    setTimeout(()=>{
+      btn.textContent=original;
+      btn.classList.remove("copied","error");
+    },1800);
   }
 
   function analysisClass(loss){
@@ -1555,6 +1710,7 @@ p { margin: 4px 0 10px; line-height: 1.55; }
   document.getElementById("resign").addEventListener("click",resignGame);
   document.getElementById("analyzeNow").addEventListener("click",runCurrentAnalysis);
   document.getElementById("analyzeGame").addEventListener("click",runGameAnalysis);
+  document.getElementById("copyAnalysis").addEventListener("click",copyAnalysisResult);
   document.getElementById("loadKifu").addEventListener("click",loadKifuText);
   document.getElementById("undo").addEventListener("click",()=>{
     if(busy || snapshots.length===0) return;
